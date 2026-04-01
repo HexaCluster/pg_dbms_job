@@ -5,11 +5,10 @@ DO $$
 DECLARE
 jobid bigint;
 BEGIN
-	-- Asynchronous job, must be executed immediately, there
-	-- is no interval and next_date is set to current timestamp
+	-- Asynchronous job, must be executed 3 seconds later
 	SELECT dbms_job.submit(
 		'BEGIN PERFORM current_timestamp; END;', -- what
-		LOCALTIMESTAMP + '3 seconds'::interval, NULL
+		LOCALTIMESTAMP + '5 seconds'::interval, NULL
 	) INTO jobid;
 END;
 $$;
