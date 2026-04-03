@@ -47,27 +47,30 @@ The job execution is caused by a NOTIFY event received by the scheduler when a n
 
 ## [Installation](#installation)
 
-There is no special requirement to run this extension but your PostgreSQL version must support extensions (>= 9.1) and Perl must be available as well as the DBI, DBD::Pg and Time::Hires Perl modules. If your distribution doesn't include these Perl modules you can always install them using CPAN:
-
-    perl -MCPAN -e 'install DBI'
-    perl -MCPAN -e 'install DBD::Pg'
-
-or in Debian like distribution use:
-
-    apt install libdbi-perl libpg-perl
-
-and on RPM based system:
-
-    yum install perl-DBI perl-DBD-Pg perl-Time-HiRes
+There is no special requirement to run this extension but your PostgreSQL version must support background workers (>= 9.3).
 
 To install the extension execute
 
     make
     sudo make install
 
-Test of the extension can be done using:
+Test of the extension can be done by setting the following parameters in your postgresql.conf
+
+    shared_preload_libraries = 'pg_dbms_job'                # (change requires restart)
+    pg_dbms_job.debug = off
+    # Poll interval of the job queue
+    pg_dbms_job.job_queue_interval = 5
+    # Maximum number of job processed at the same time
+    pg_dbms_job.job_queue_processes = 10
+    pg_dbms_job.database = regress_dbms_job
+    pg_dbms_job.username = regress_dbms_job_dba
+    pg_dbms_job.naptime = 100ms
+
+restart PostgreSQL and execute the following command as a PostgreSQL superuser:
 
     make installcheck
+
+The test script `t/01_basic.t` will create the `regress_dbms_job` database with users `regress_dbms_job_dba` and `regress_dbms_job_user` to run the tests.
 
 ## [Manage the extension](#manage-the-extension)
 
@@ -77,63 +80,27 @@ Each database that needs to use `pg_dbms_job` must creates the extension:
 
 To upgrade to a new version execute:
 
-    psql -d mydb -c 'ALTER EXTENSION pg_dbms_job UPDATE TO "1.4.0"'
+    psql -d mydb -c 'ALTER EXTENSION pg_dbms_job UPDATE TO "2.0.0"'
 
 If you doesn't have the privileges to create an extension you can just import the extension file into the database, for example:
 
-    psql -d mydb -f sql/pg_dbms_job--1.4.0.sql
+    psql -d mydb -f sql/pg_dbms_job--2.0.0.sql
 
-This is especially useful for database in DBaas cloud services. To upgrade just import the extension upgrade files using psql.
+This is especially useful for database n DBaas cloud services. To upgrade just import the extension upgrade files using psql.
 
 A dedicated scheduler per database using the extension must be started.
 
 ## [Running the scheduler](#running-the-scheduler)
 
-The scheduler is a Perl program that runs in background it can be executed by any system user as follow:
+Starting with version 2.0.0 the scheduler is now a background worker so you just need to preload it as a library using:
 
-    pg_dbms_job -c /etc/pg_dbms_job/mydb-dbms_job.conf
+    shared_preload_libraries = 'pg_dbms_job'
 
-There must be one scheduler daemon running per database using the extension with a dedicated configuration file.
+and restart PostgreSQL. 
 
-The configuration file must define the database connection settings where the pg_dbms_job extension is used. This connection must be the extension tables owner or have the superuser privileges to be able to bypass the Row Level Security rules defined on the pg_dbms_job tables.
+In the postgresql.conf configuration file you must also define the database and superuser role to use to look at jobs and to control naptime.
 
-```
-usage: pg_dbms_job [options]
-
-options:
-
-  -c, --config  file  configuration file. Default: /etc/pg_dbms_job/pg_dbms_job.conf
-  -d, --debug         run in debug mode.
-  -k, --kill          stop current running daemon gracefully waiting
-                      for all job completion.
-  -m, --immediate     stop running daemon and jobs immediatly.
-  -r, --reload        reload configuration file and jobs definition.
-  -s, --single        do not detach and run in single loop mode and exit.
-```
-
-To stop gracefully the scheduler daemon after all running jobs are terminated, you can run the same command but with the `-k` option:
-```
-pg_dbms_job -c /etc/pg_dbms_job/mydb-dbms_job.conf -k
-```
-you can also send the TERM signal to the main process:
-```
-$ ps auwx | grep "pg_dbms_job:main" | grep -v grep
-gilles     14754  0.0  0.0  39636 17492 ?        Ss   10:15   0:00 pg_dbms_job:main
-
-$ kill -15 14754
-```
-
-To force the scheduler to stop immedialely interrupting the running jobs use the `-m` option:
-```
-pg_dbms_job -c /etc/pg_dbms_job/mydb-dbms_job.conf -m
-```
-or send the INT signal:
-```
-$ ps auwx | grep "pg_dbms_job:main" | grep -v grep
-gilles     14754  0.0  0.0  39636 17492 ?        Ss   10:15   0:00 pg_dbms_job:main
-
-$ kill -2 14754
-```
+The user must be the extension tables owner or have the superuser privileges to be able to bypass the Row Level Security rules defined on the pg_dbms_job tables.
 
 ## [Configuration](#configuration)
 
@@ -142,70 +109,27 @@ The format of the configuration file is the same as `postgresql.conf`.
 ### General
 
 - `debug`: debug mode. Default 0, disabled.
-- `pidfile`: path to pid file. Default to `/tmp/pg_dbms_job.pid`.
-- `logfile`: log file name pattern, can include strftime() escapes, for example
-   to have a log file per week day use `%a` in the log file name.
-   Default `/tmp/pg_dbms_job.log`.
-- `log_truncate_on_rotation`: If activated an existing log file with the same
-   name as the new log file will be truncated rather than appended to. But such
-   truncation only occurs on time-driven rotation, not on restarts. Default `0`,
-   disabled.
-- `job_queue_interval`: poll interval of the jobs queue. Default 5 seconds.
-- `job_queue_processes`: Maximum number of job processed at the same time.
-   Default `1000`.
-- `nap_time`: Time to wait in the main loop before each run. Default `100ms`
+- `job_queue_interval`: poll interval of the jobs queue in seconds. Default 5 seconds, max 3600 seconds.
+- `job_queue_processes`: Maximum number of job processed at the same time. Default `1000`.
+- `naptime`: Time to wait in the main loop before each run. Default `100ms`.
+- `database`: name of the database where the extension is created. Default the `postgres` database.
+- `username` = name of the role owner of the extension's tables. Default bootstrap superuser.
 
-### Database
-
-- `host`: ip adresse or hostname where the PostgreSQL cluster is running.
-- `port`: port where the PostgreSQL cluster is listening.
-- `database`: name of the database where to connect.
-- `user`: username used to connect to the database, it must be a superuser role.
-- `passwd`: password for this role.
 
 ### Example
 ```
-#-----------
-#  General
-#-----------
+# Add settings for extensions here
+shared_preload_libraries = 'pg_dbms_job'                # (change requires restart)
 # Toogle debug mode
-debug=0
-# Path to the pid file
-pidfile=/tmp/pg_dbms_job.pid
-# log file name pattern, can include strftime() escapes, for example
-# to have a log file per week day use %a in the log file name.
-logfile=/tmp/pg_dbms_job.log
-# If activated an existing log file with the same name as the new log
-# file will be truncated rather than appended to. But such truncation
-# only occurs on time-driven rotation, not on restarts.
-log_truncate_on_rotation=0
+#pg_dbms_job.debug = on
 # Poll interval of the job queue
-job_queue_interval=5
+pg_dbms_job.job_queue_interval = 5
 #Maximum number of job processed at the same time
-job_queue_processes=1000
-# Time to wait in the main loop before each run (to free some CPU resources)
-nap_time = 0.1
+pg_dbms_job.job_queue_processes = 10
+pg_dbms_job.database = regress_dbms_job
+pg_dbms_job.username = regress_dbms_job_dba # superuser to work with the extension
+pg_dbms_job.naptime = 100ms
 
-#-----------
-#  Database
-#-----------
-host=localhost
-port=5432
-database=dbms_job
-user=gilles
-passwd=gilles
-```
-
-To force the scheduler to reread the configuration file after changes you can use the `-r` option:
-```
-pg_dbms_job -c /etc/pg_dbms_job/mydb-dbms_job.conf -r
-```
-or send the HUP signal:
-```
-$ ps auwx | grep "pg_dbms_job:main" | grep -g grep
-gilles     14758  0.0  0.0  39636 17492 ?        Ss   10:17   0:00 pg_dbms_job:main
-
-$ kill -1 14758
 ```
 
 ## [Jobs definition](#jobs-definition)
@@ -299,7 +223,7 @@ CREATE TABLE dbms_job.all_scheduler_job_run_details
         error char(5), -- error code in the case of an error
         req_start_date timestamp with time zone, -- requested start date of the job run
         actual_start_date timestamp with time zone, -- actual date on which the job was run
-        run_duration bigint, -- duration of the job run in seconds
+        run_duration interval, -- duration of the job run in seconds, stored as an interval
         instance_id integer, -- identifier of the instance on which the job was run
         session_id integer, -- session identifier of the job run
         slave_pid integer, -- process identifier of the slave on which the job was run
