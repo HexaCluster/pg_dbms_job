@@ -36,13 +36,11 @@ If the submit stored procedure is called without the next_date (when) and interv
 
 If a scheduled job completes successfully, then its new execution date is placed in next_date. The new date is calculated by evaluating the SQL expression defined as interval. The interval parameter must evaluate to a time in the future.
 
-This extension consist in a SQL script to create all the objects related to its operation and a daemon that must be run attached to the database where jobs are defined. The daemon is responsible to execute the queued asynchronous jobs and the scheduled ones. It can be run on the same host of the database, where the jobs are defined, or on any other host. The schedule time is taken from the database host not where the daemon is running.
+This extension consist in a SQL script to create all the objects related to its operation and a background worker that must be run attached to the database where jobs are defined. The background worker is responsible to execute the queued asynchronous jobs and the scheduled ones. It is run by PostgreSQL at startup throught the setting of `shared_preload_libraries`.
 
-The number of jobs that can be executed at the same time is limited to 1000 by default. If this limit is reached the daemon will wait that a process ends to run a new one.
+The number of jobs that can be executed at the same time is limited to 1000 by default. If this limit is reached the background worker will wait that a process ends to run a new one.
 
-The use of an external scheduler daemon instead of a background worker is a choice, being able to fork thousands of sub-processes from a background worker is not a good idea.
-
-The job execution is caused by a NOTIFY event received by the scheduler when a new job is submitted or modified. The notifications are polled every 0.1 second. When there is no notification the scheduler polls every `job_queue_interval` seconds (5 seconds by default) the tables where job definition are stored. This mean that at worst a job will be executed `job_queue_interval` seconds after the next execution date defined.
+The scheduler polls every `job_queue_interval` seconds (5 seconds by default) the tables where job definition are stored. This mean that at worst a job will be executed `job_queue_interval` seconds after the next execution date defined.
 
 
 ## [Installation](#installation)
@@ -200,11 +198,9 @@ GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA dbms_job TO <role>;
 
 A job will be taken in account by the scheduler only when the transaction where it has been created is committed. It is transactional so no risk that it will be executed if the transaction is aborted.
 
-When starting or when it is reloaded the pg_dbms_job daemon first checks that another daemon is not already attached to the same database. If this is the case it will refuse to continue. This is a double verification, the first one is on an existing pid file and the second is done by looking at pg_stat_activity to see if a `pg_dbms_job:main` process already exists.
+By default the scheduler allow 1000 jobs to be executed at the same time, you may want to control this value to a lower or a upper value. This limit can be changed in the configuration file with directive `job_queue_processes`. Note that if your system doesn't have enough resources to run all the jobs at the same time it could be problematic. You must also take attention to who is authorised to submit jobs because this could affect the performances of the server.
 
-By default the scheduler allow 1000 job to be executed at the same time, you may want to control this value to a lower or a upper value. This limit can be changed in the configuration file with directive `job_queue_processes`. Note that if your system doesn't enough resources to run all the job at the same time it could be problematic. You must also take attention to who is authorised to submit jobs because this could affect the performances of the server.
-
-Jobs are executed with as the user that defined the job and with the search path used at the time of the job submission. This information is available in attributes `log_user` and `schema_user` of table `dbms_job.all_scheduled_jobs` and `dbms_job.all_async_jobs`. That mean that the database connection user of the scheduler must have the privilege to change the user using `SET ROLE <jobuser>.`. This allow the user that have submitted the job to view its entries in the history table.
+Jobs are executed with as the user that defined the job and with the search path used at the time of the job submission. This information is available in attributes `log_user` and `schema_user` of table `dbms_job.all_scheduled_jobs` and `dbms_job.all_async_jobs`. That mean that the pg_dbms_job user of the scheduler must have the privilege to change the user using `SET ROLE <jobuser>.`. This allow the user that have submitted the job to view its entries in the history table. This user can be defined using `pg_dbms_job.username` with default to `postgres`.
 
 
 ## [Jobs execution history](#jobs-execution-history)
