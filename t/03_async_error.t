@@ -2,9 +2,6 @@ use Test::Simple tests => 4;
 
 # Submit an asynchronous job with a failure
 
-# Cleanup garbage from previous regression test runs
-`rm -f /tmp/regress_dbms_job.*`;
-
 # Verify that the process is running
 $ret = `ps auwx | grep pg_dbms_job: | grep -v grep | wc -l`;
 chomp($ret);

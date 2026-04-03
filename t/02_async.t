@@ -2,9 +2,6 @@ use Test::Simple tests => 6;
 
 # Test asynchronous jobs
 
-# Cleanup garbage from previous regression test runs
-`rm -f /tmp/regress_dbms_job.*`;
-
 # Cleanup history and job tables
 $ret = `psql -X -d regress_dbms_job -c "TRUNCATE dbms_job.all_scheduler_job_run_details, dbms_job.all_scheduled_jobs" > /dev/null 2>&1`;
 ok( $? == 0, "truncate history and job tables");

@@ -3,9 +3,6 @@ use Test::Simple tests => 12;
 # Test that the ademon can be started and stopped
 # as well as default privileges on objects
 
-# Cleanup garbage from previous regression test runs
-`rm -f /tmp/regress_dbms_job.*`;
-
 # First drop the test database and users
 `psql -c "DROP ROLE regress_dbms_job_user" 2>/dev/null`;
 `psql -c "DROP ROLE regress_dbms_job_dba" 2>/dev/null`;

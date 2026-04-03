@@ -2,9 +2,6 @@ use Test::Simple tests => 11;
 
 # Test scheduled job with an interval of 6 seconds
 
-# Cleanup garbage from previous regression test runs
-`rm -f /tmp/regress_dbms_job.*`;
-
 # Verify that the process is running
 $ret = `ps auwx | grep pg_dbms_job: | grep -v grep | wc -l`;
 chomp($ret);
