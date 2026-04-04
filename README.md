@@ -45,7 +45,7 @@ The scheduler polls every `job_queue_interval` seconds (5 seconds by default) th
 
 ## [Installation](#installation)
 
-There is no special requirement to run this extension but your PostgreSQL version must support background workers (>= 9.3).
+There is no special requirement to run this extension but your PostgreSQL version must be >= 10.
 
 To install the extension execute
 
@@ -62,7 +62,8 @@ Test of the extension can be done by setting the following parameters in your po
     pg_dbms_job.job_queue_processes = 10
     pg_dbms_job.database = regress_dbms_job
     pg_dbms_job.username = regress_dbms_job_dba
-    pg_dbms_job.naptime = 100ms
+    # Awake time in milliseconds, value between 100 and 60000 milliseconds
+    pg_dbms_job.naptime = 100
 
 restart PostgreSQL and execute the following command as a PostgreSQL superuser:
 
@@ -126,7 +127,7 @@ pg_dbms_job.job_queue_interval = 5
 pg_dbms_job.job_queue_processes = 10
 pg_dbms_job.database = regress_dbms_job
 pg_dbms_job.username = regress_dbms_job_dba # superuser to work with the extension
-pg_dbms_job.naptime = 100ms
+pg_dbms_job.naptime = 100
 
 ```
 
