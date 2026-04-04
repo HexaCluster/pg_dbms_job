@@ -490,8 +490,11 @@ pgdj_main(Datum main_arg)
 
     /* Connect to the target database as configured */
     BackgroundWorkerInitializeConnection(pgdj_database,
-                                         pgdj_username,
-                                         0);
+                                         pgdj_username
+#if PG_VERSION_NUM >= 110000
+                                         , 0
+#endif
+					 );
 
     pgstat_report_appname(PGDJ_APPNAME ":main");
 
@@ -988,8 +991,11 @@ pgdj_worker_main(Datum main_arg)
 
     /* Connect to the database */
     BackgroundWorkerInitializeConnection(pgdj_database,
-                                         pgdj_username,
-                                         0);
+                                         pgdj_username
+#if PG_VERSION_NUM >= 110000
+                                         , 0
+#endif
+					 );
 
     pgstat_report_appname(MyBgworkerEntry->bgw_name);
 
