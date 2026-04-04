@@ -166,7 +166,11 @@ _PG_init(void)
 
     snprintf(worker.bgw_name,          BGW_MAXLEN, "%s:main",  PGDJ_APPNAME);
     snprintf(worker.bgw_type,          BGW_MAXLEN, "%s",       PGDJ_APPNAME);
+#if PG_VERSION_NUM <= 170000
+    snprintf(worker.bgw_library_name,  BGW_MAXLEN,  "%s",       PGDJ_APPNAME);
+#else
     snprintf(worker.bgw_library_name,  MAXPGPATH,  "%s",       PGDJ_APPNAME);
+#endif
     snprintf(worker.bgw_function_name, BGW_MAXLEN, "pgdj_main");
     worker.bgw_main_arg   = (Datum) 0;
     worker.bgw_notify_pid = 0;
