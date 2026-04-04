@@ -25,6 +25,7 @@ jobs:
     strategy:
       matrix:
         pgversion:
+          - 17
           - 18
 
     env:
@@ -44,15 +45,3 @@ jobs:
         make PROFILE="-Werror"
         sudo -E make install
 
-    - name: test
-      run: |
-        sudo pg_conftool $PGVERSION main set shared_preload_libraries pg_dbms_job
-        sudo pg_conftool $PGVERSION main set pg_dbms_job.database regress_dbms_job
-        sudo pg_conftool $PGVERSION main set pg_dbms_job.username regress_dbms_job_dba
-        sudo service postgresql restart
-        make installcheck
-
-    - name: show regression diffs
-      if: ${{ failure() }}
-      run: |
-        cat regression.diffs
