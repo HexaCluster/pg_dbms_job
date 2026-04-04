@@ -165,7 +165,9 @@ _PG_init(void)
     worker.bgw_restart_time = 5;   /* auto-restart 5 s after crash */
 
     snprintf(worker.bgw_name,          BGW_MAXLEN, "%s:main",  PGDJ_APPNAME);
+#if PG_VERSION_NUM >= 110000
     snprintf(worker.bgw_type,          BGW_MAXLEN, "%s",       PGDJ_APPNAME);
+#endif
 #if PG_VERSION_NUM <= 170000
     snprintf(worker.bgw_library_name,  BGW_MAXLEN,  "%s",       PGDJ_APPNAME);
 #else
@@ -428,8 +430,14 @@ spawn_job_worker(long long jobid, bool is_scheduled)
              is_scheduled ? "scheduled" : "async",
              jobid);
 
+#if PG_VERSION_NUM >= 110000
     snprintf(worker.bgw_type,          BGW_MAXLEN, "%s:worker", PGDJ_APPNAME);
-    snprintf(worker.bgw_library_name,  MAXPGPATH,  "%s",        PGDJ_APPNAME);
+#endif
+#if PG_VERSION_NUM <= 170000
+    snprintf(worker.bgw_library_name,  BGW_MAXLEN,  "%s",       PGDJ_APPNAME);
+#else
+    snprintf(worker.bgw_library_name,  MAXPGPATH,  "%s",       PGDJ_APPNAME);
+#endif
     snprintf(worker.bgw_function_name, BGW_MAXLEN, "pgdj_worker_main");
 
     /* Pass "<s|a>:<jobid>" to the child via bgw_extra */
