@@ -481,13 +481,6 @@ Following the job activity a certain amount of bloat can be created in queues ta
 VACUUM FULL dbms_job.all_scheduled_jobs, dbms_job.all_async_jobs;
 ```
 
-If you have a very high job execution use that generates thousands of NOTIFY per seconds you should better disable this feature to avoid filling the notify queue. The queue is quite large (8GB in a standard installation) but when it is full the transaction that emit the NOTIFY will fail.  Once the queue is half full you will see warnings in the log file. If you experience this limitation you can disable this feature by dropping the triggers responsible of the notification.
-```
-DROP TRIGGER dbms_job_scheduled_notify_trg ON dbms_job.all_scheduled_jobs;
-DROP TRIGGER dbms_job_async_notify_trg ON dbms_job.all_async_jobs;
-```
-Once the trigger are dropped the polling of job will only be done every `job_queue_interval` seconds (5 seconds by default).
-
 ## [Authors](#authors)
 
 - Gilles Darold
