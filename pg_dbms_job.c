@@ -56,12 +56,12 @@ PG_MODULE_MAGIC;
 #define PGDJ_APPNAME   "pg_dbms_job"
 
 /* * GUC variables  to be set in postgresql.conf */
-static char *pgdj_database        = NULL;
-static char *pgdj_username        = NULL;
-static int   pgdj_naptime         = 100;   /* ms between main-loop ticks   */
-static int   pgdj_queue_processes = 1000;  /* max parallel job workers     */
-static int   pgdj_queue_interval  = 5;     /* s: forced full-poll period   */
-static bool  pgdj_debug           = false;
+static char  *pgdj_database        = NULL;
+static char  *pgdj_username        = NULL;
+static int    pgdj_naptime         = 100;   /* ms between main-loop ticks   */
+static int    pgdj_queue_processes = 1000;  /* max parallel job workers     */
+static double pgdj_queue_interval  = 5;     /* s: forced full-poll period   */
+static bool   pgdj_debug           = false;
 
 /* Signal flags */
 static volatile sig_atomic_t got_sigterm = false;
@@ -147,7 +147,7 @@ _PG_init(void)
         NULL, &pgdj_queue_processes, 1000, 1, 8192,
         PGC_SIGHUP, 0, NULL, NULL, NULL);
 
-    DefineCustomIntVariable(
+    DefineCustomRealVariable(
         "pg_dbms_job.job_queue_interval",
         "Seconds between forced full job-queue polls.",
         NULL, &pgdj_queue_interval, 5, 1, 3600,
@@ -559,10 +559,10 @@ pgdj_main(Datum main_arg)
 
         do_async = startup ||
                    TimestampDifferenceExceeds(last_async_poll, now,
-                                              pgdj_queue_interval * 1000);
+                                              (int) (pgdj_queue_interval * 1000));
         do_scheduled = startup ||
                        TimestampDifferenceExceeds(last_scheduled_poll, now,
-                                                  pgdj_queue_interval * 1000);
+                                                  (int) (pgdj_queue_interval * 1000));
 
         startup = false;
         jobs_reset();
