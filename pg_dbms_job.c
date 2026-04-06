@@ -20,6 +20,8 @@
  *   pg_dbms_job.database = 'mydb'
  *
  * Original Author : Gilles Darold <gilles@darold.net>
+ * IA              : Claude have been used to translate the Perl daemon into
+ *                   a PG background worker. Reviewed and fixed by the author.
  * Licence         : PostgreSQL
  * Copyright (c) 2021-2023, MigOps Inc.
  * Copyright (c) 2024-2026, Hexacluster Corp.
