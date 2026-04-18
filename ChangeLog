@@ -1,3 +1,24 @@
+Sat Apr 18 2026 - Version 2.0.0
+
+This major release is a rewrite of the Perl scheduler into a PostgreSQL
+background worker written in C and some other improvements.
+
+  - Rewrite scheduler Perl external daemon into a background worker in C.
+    Thanks to Eric-zch for the feature request.
+  - Add github compilation testing workflow.
+  - Fix documentation for use of background worker and change in table
+    dbms_job.all_scheduler_job_run_details.
+  - Remove obsolete perl program and configuration file.
+  - Add naptime configuration parameter to change default value of 100 ms.
+    Thanks to Pavel Seleznev for the patch.
+  - Ability to set decimal value for job_queue_interval. Thanks to Pavel
+    Seleznev for the patch.
+  - Precise unit for run_duration column. Thanks to Omri Beck for the report.
+  - Set $pg_dbms_job$ as a block for job execution to avoid conflict with
+    the code executed. Thanks to nettrash for the patch.
+  - Fix regression tests failing with PG15. Thanks to HelloYJohn for the report.
+
+
 Sun Oct 02 2022 - Version 1.5.0
 
 This release is maintenance release to fix one major issue.
