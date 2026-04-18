@@ -1278,7 +1278,11 @@ pgdj_worker_main(Datum main_arg)
 
     /* Worker subprocesses ignore SIGHUP and complete their work on SIGTERM */
     pqsignal(SIGTERM, pgdj_sigterm);
+#if PG_VERSION_NUM < 190000
     pqsignal(SIGHUP,  SIG_IGN);
+#else
+    pqsignal(SIGHUP,  PG_SIG_IGN);
+#endif
     BackgroundWorkerUnblockSignals();
 
     /* Decode the job descriptor from bgw_extra */
