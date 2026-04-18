@@ -626,8 +626,11 @@ notify_wait_set_build(void)
      * point is TopMemoryContext (we are in the leader's main function), so
      * the set will live for the lifetime of the process.
      */
-    // FIXME: wait_set = CreateWaitEventSet(CurrentMemoryContext, WES_NEVENTS);
+#if PG_VERSION_NUM >= 170000
     wait_set = CreateWaitEventSet(CurrentResourceOwner, WES_NEVENTS);
+#else
+    wait_set = CreateWaitEventSet(CurrentMemoryContext, WES_NEVENTS);
+#endif
 
     AddWaitEventToSet(wait_set, WL_LATCH_SET,
                       PGINVALID_SOCKET, MyLatch, NULL);
