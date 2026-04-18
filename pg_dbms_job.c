@@ -8,10 +8,19 @@
  *   - One "leader" bgworker (pg_dbms_job:main) registered at preload time.
  *     It polls the job tables and dynamically registers a short-lived child
  *     bgworker (pg_dbms_job:worker:<jobid>) for every job that is due.
- *   - All DB access uses the SPI interface (no external libpq needed).
+ *   - SPI is used for all job-table access (scheduled polls, metadata updates,
+ *     run-history inserts).
+ *   - A *second*, dedicated libpq connection is opened solely to issue
+ *     LISTEN on both notification channels.  Its socket fd is added to a
+ *     WaitEventSet alongside the process latch, so the leader wakes
+ *     immediately when a NOTIFY dbms_job_async_notify or
+ *     dbms_job_scheduled_notify arrives, without burning CPU.
  *   - Configuration lives in postgresql.conf GUC parameters.
- *   - The leader uses WaitLatch() for its sleep so it wakes immediately on
- *     SIGTERM or postmaster death.
+ *   - The leader uses WaitEventSetWait() for its sleep so it wakes on:
+ *       • a NOTIFY arriving on the libpq socket  (WL_SOCKET_READABLE)
+ *       • SIGTERM / SIGHUP / SIGUSR1             (WL_LATCH_SET)
+ *       • the job_queue_interval timeout         (WL_TIMEOUT)
+ *       • postmaster death                       (WL_POSTMASTER_DEATH)
  *
  * Installation:
  *   make && make install          (uses PGXS)
@@ -37,12 +46,18 @@
 #include "executor/spi.h"
 #include "fmgr.h"
 #include "lib/stringinfo.h"
+#include "postgresql/libpq-fe.h"           /* PGconn, PQconnectdb, PQnotifies … */
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/bgworker.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/proc.h"
+#if PG_VERSION_NUM >= 180000
+#include "storage/waiteventset.h" /* WaitEventSet, WaitEventSetWait … */
+#else
+#include "storage/latch.h" /* WaitEventSet, WaitEventSetWait … */
+#endif
 #include "tcop/utility.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
@@ -52,7 +67,7 @@
 
 PG_MODULE_MAGIC;
 
-#define PGDJ_VERSION   "1.5"
+#define PGDJ_VERSION   "2.0"
 #define PGDJ_APPNAME   "pg_dbms_job"
 
 /* * GUC variables  to be set in postgresql.conf */
@@ -86,6 +101,23 @@ static int      pending_jobs_cap = 0;
 /* Counter of dynamic workers the leader has spawned */
 static int running_workers = 0;
 
+/*
+ * Dedicated libpq connection used only for LISTEN.
+ * Kept separate from the SPI connection so that:
+ *   a) LISTEN does not interfere with SPI transactions, and
+ *   b) the socket fd can be watched with WaitEventSetAddSocket.
+ */
+static PGconn *notify_conn = NULL;
+
+/* WaitEventSet that combines our latch + the libpq notify socket */
+static WaitEventSet *wait_set = NULL;
+
+/* Index positions inside wait_set (assigned at build time) */
+#define WES_IDX_LATCH   0
+#define WES_IDX_POSTMASTER 1
+#define WES_IDX_NOTIFY  2
+#define WES_NEVENTS     3   /* max events to return per WaitEventSetWait call */
+
 /* functions declarations */
 void _PG_init(void);
 PGDLLEXPORT void pgdj_main(Datum main_arg);
@@ -102,6 +134,12 @@ static void jobs_add(long long jobid,
 static int  fetch_scheduled_jobs(void);
 static int  fetch_async_jobs(void);
 static void spawn_job_worker(long long jobid, bool is_scheduled);
+
+/* Notify connection helpers */
+static void notify_conn_open(void);
+static void notify_conn_close(void);
+static void notify_wait_set_build(void);
+static bool notify_drain(bool *got_async, bool *got_scheduled);
 
 static void run_job(long long jobid, bool is_scheduled);
 static void update_scheduled_success(long long jobid, double duration_secs);
@@ -475,6 +513,190 @@ spawn_job_worker(long long jobid, bool is_scheduled)
 }
 
 /* =========================================================================
+ * notify_conn_open
+ *
+ * Open a dedicated libpq connection to the same database that SPI uses,
+ * issue LISTEN on both channels, then return.
+ *
+ * We build the connection string from the same GUC values used for SPI.
+ * The connection is non-blocking so we never stall inside libpq calls.
+ * =========================================================================
+ */
+static void
+notify_conn_open(void)
+{
+    char   connstr[1024];
+    PGresult *res;
+
+    if (notify_conn != NULL)
+        notify_conn_close();
+
+    /*
+     * Build a minimal connection string.  We deliberately do NOT pass a
+     * password here – the background worker already runs as a trusted OS
+     * user (the postgres system account), so peer / ident / trust auth
+     * should succeed on a Unix socket.  Administrators who use md5/scram
+     * can add a .pgpass entry for the postgres user.
+     */
+    if (pgdj_username && pgdj_username[0])
+        snprintf(connstr, sizeof(connstr),
+                 "dbname=%s user=%s application_name=%s:notify",
+                 pgdj_database ? pgdj_database : "postgres",
+                 pgdj_username,
+                 PGDJ_APPNAME);
+    else
+        snprintf(connstr, sizeof(connstr),
+                 "dbname=%s application_name=%s:notify",
+                 pgdj_database ? pgdj_database : "postgres",
+                 PGDJ_APPNAME);
+
+    notify_conn = PQconnectdb(connstr);
+    if (PQstatus(notify_conn) != CONNECTION_OK)
+    {
+        elog(WARNING, "%s: could not open notify connection: %s",
+             PGDJ_APPNAME, PQerrorMessage(notify_conn));
+        PQfinish(notify_conn);
+        notify_conn = NULL;
+        return;
+    }
+
+    /* Switch to non-blocking mode so PQconsumeInput never blocks */
+    if (PQsetnonblocking(notify_conn, 1) != 0)
+    {
+        elog(WARNING, "%s: could not set notify connection non-blocking: %s",
+             PGDJ_APPNAME, PQerrorMessage(notify_conn));
+        PQfinish(notify_conn);
+        notify_conn = NULL;
+        return;
+    }
+
+    /* LISTEN on both channels */
+    res = PQexec(notify_conn, "LISTEN dbms_job_async_notify");
+    if (PQresultStatus(res) != PGRES_COMMAND_OK)
+        elog(WARNING, "%s: LISTEN dbms_job_async_notify failed: %s",
+             PGDJ_APPNAME, PQerrorMessage(notify_conn));
+    PQclear(res);
+
+    res = PQexec(notify_conn, "LISTEN dbms_job_scheduled_notify");
+    if (PQresultStatus(res) != PGRES_COMMAND_OK)
+        elog(WARNING, "%s: LISTEN dbms_job_scheduled_notify failed: %s",
+             PGDJ_APPNAME, PQerrorMessage(notify_conn));
+    PQclear(res);
+
+    elog(LOG, "%s: notify connection established", PGDJ_APPNAME);
+}
+
+/* =========================================================================
+ * notify_conn_close – tear down the LISTEN connection and free resources
+ * =========================================================================
+ */
+static void
+notify_conn_close(void)
+{
+    if (notify_conn)
+    {
+        PQfinish(notify_conn);
+        notify_conn = NULL;
+    }
+}
+
+/* =========================================================================
+ * notify_wait_set_build
+ *
+ * (Re)build the WaitEventSet combining:
+ *   slot 0  – our process latch   (WL_LATCH_SET)
+ *   slot 1  – postmaster death    (WL_POSTMASTER_DEATH)
+ *   slot 2  – libpq socket        (WL_SOCKET_READABLE)  [if conn is live]
+ *
+ * Must be called after notify_conn_open(), and again whenever the libpq
+ * connection is replaced (e.g. after a reconnect).
+ * =========================================================================
+ */
+static void
+notify_wait_set_build(void)
+{
+    if (wait_set != NULL)
+    {
+        FreeWaitEventSet(wait_set);
+        wait_set = NULL;
+    }
+
+    /*
+     * Allocate room for 3 event sources.  The CurrentMemoryContext at this
+     * point is TopMemoryContext (we are in the leader's main function), so
+     * the set will live for the lifetime of the process.
+     */
+    // FIXME: wait_set = CreateWaitEventSet(CurrentMemoryContext, WES_NEVENTS);
+    wait_set = CreateWaitEventSet(CurrentResourceOwner, WES_NEVENTS);
+
+    AddWaitEventToSet(wait_set, WL_LATCH_SET,
+                      PGINVALID_SOCKET, MyLatch, NULL);
+
+    AddWaitEventToSet(wait_set, WL_POSTMASTER_DEATH,
+                      PGINVALID_SOCKET, NULL, NULL);
+
+    if (notify_conn != NULL && PQstatus(notify_conn) == CONNECTION_OK)
+    {
+        int sock = PQsocket(notify_conn);
+        if (sock != PGINVALID_SOCKET)
+            AddWaitEventToSet(wait_set, WL_SOCKET_READABLE,
+                              sock, NULL, NULL);
+        else
+            elog(WARNING, "%s: libpq socket is invalid, NOTIFY wake-up disabled",
+                 PGDJ_APPNAME);
+    }
+    else
+    {
+        elog(WARNING, "%s: notify connection is down, NOTIFY wake-up disabled",
+             PGDJ_APPNAME);
+    }
+}
+
+/* =========================================================================
+ * notify_drain
+ *
+ * Called whenever the libpq socket becomes readable (or just before a
+ * scheduled poll).  Reads all pending notifications from the libpq
+ * connection and sets the two output flags accordingly.
+ *
+ * Returns false if the connection has been lost (caller should reconnect).
+ * =========================================================================
+ */
+static bool
+notify_drain(bool *got_async, bool *got_scheduled)
+{
+    PGnotify *notify;
+
+    if (notify_conn == NULL || PQstatus(notify_conn) != CONNECTION_OK)
+        return false;
+
+    /* Pull any pending server data into libpq's internal buffer */
+    if (PQconsumeInput(notify_conn) == 0)
+    {
+        elog(WARNING, "%s: PQconsumeInput failed: %s",
+             PGDJ_APPNAME, PQerrorMessage(notify_conn));
+        return false;
+    }
+
+    /* Drain all queued notifications */
+    while ((notify = PQnotifies(notify_conn)) != NULL)
+    {
+        if (pgdj_debug)
+            elog(LOG, "%s: received NOTIFY on channel \"%s\" from pid %d",
+                 PGDJ_APPNAME, notify->relname, notify->be_pid);
+
+        if (strcmp(notify->relname, "dbms_job_async_notify") == 0)
+            *got_async = true;
+        else if (strcmp(notify->relname, "dbms_job_scheduled_notify") == 0)
+            *got_scheduled = true;
+
+        PQfreemem(notify);
+    }
+
+    return true;
+}
+
+/* =========================================================================
  * pgdj_main  –  leader worker entry point
  * =========================================================================
  */
@@ -490,7 +712,7 @@ pgdj_main(Datum main_arg)
     pqsignal(SIGHUP,  pgdj_sighup);
     BackgroundWorkerUnblockSignals();
 
-    /* Connect to the target database as configured */
+    /* SPI connection: used for all job-table reads and writes */
     BackgroundWorkerInitializeConnection(pgdj_database,
                                          pgdj_username
 #if PG_VERSION_NUM >= 110000
@@ -511,34 +733,59 @@ pgdj_main(Datum main_arg)
     pending_jobs_cap = 64;
     pending_jobs_cnt = 0;
 
+    /*
+     * Open the dedicated libpq LISTEN connection, then build the
+     * WaitEventSet that combines our process latch with the libpq socket.
+     * From this point on we sleep with WaitEventSetWait() instead of the
+     * simpler WaitLatch(), so that data arriving on the libpq socket wakes
+     * us immediately without waiting for the full job_queue_interval.
+     */
+    notify_conn_open();
+    notify_wait_set_build();
+
     /* Main loop */
     while (!got_sigterm)
     {
-        int         rc;
+        WaitEvent   events[WES_NEVENTS];
+        int         nevents;
         TimestampTz now;
-        bool        do_async;
-        bool        do_scheduled;
+        bool        do_async     = false;
+        bool        do_scheduled = false;
+        bool        notify_socket_ready = false;
 
         /*
-         * Sleep for naptime ms, or until woken by:
-         *   - SIGTERM  (got_sigterm)
-         *   - SIGHUP   (got_sighup)
-         *   - SIGUSR1  from postmaster when a dynamic worker exits
-         *   - Postmaster death
+         * Sleep until one of:
+         *   WL_LATCH_SET       – SIGTERM, SIGHUP, or SIGUSR1 from postmaster
+         *                        (dynamic worker exited)
+         *   WL_POSTMASTER_DEATH
+         *   WL_SOCKET_READABLE – data arrived on the libpq notify socket
+         *   WL_TIMEOUT         – job_queue_interval elapsed (forced full poll)
+         *
+         * We use job_queue_interval (in ms) as the timeout so that even
+         * without a NOTIFY we still do a periodic full sweep.
          */
-        rc = WaitLatch(MyLatch,
-                       WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-                       pgdj_naptime,
-                       PG_WAIT_EXTENSION);
-        ResetLatch(MyLatch);
+        nevents = WaitEventSetWait(wait_set,
+                                   pgdj_queue_interval * 1000L,
+                                   events, WES_NEVENTS,
+                                   PG_WAIT_EXTENSION);
 
-        if (rc & WL_POSTMASTER_DEATH)
-            proc_exit(1);
+        /* Inspect which events fired */
+        for (int i = 0; i < nevents; i++)
+        {
+            if (events[i].events & WL_POSTMASTER_DEATH)
+                proc_exit(1);
+
+            if (events[i].events & WL_LATCH_SET)
+                ResetLatch(MyLatch);
+
+            if (events[i].events & WL_SOCKET_READABLE)
+                notify_socket_ready = true;
+        }
 
         if (got_sigterm)
             break;
 
-        /* Reload GUCs on SIGHUP */
+	/* Reload GUCs on SIGHUP, then rebuild wait_set in case naptime changed */
         if (got_sighup)
         {
             got_sighup = false;
@@ -548,21 +795,57 @@ pgdj_main(Datum main_arg)
 
         /*
          * When a dynamic worker exits the postmaster sends us SIGUSR1,
-         * which wakes the latch.  Use that as a hint to decrement our
-         * counter (conservative: we may decrement more than one per tick
-         * if multiple workers exit between ticks, but we never go < 0).
+         * which sets our latch.  Decrement the running counter
+         * conservatively (we never let it go below 0).
          */
         if (running_workers > 0)
             running_workers--;
 
+        /*
+         * Drain all pending notifications from the libpq socket.
+         *
+         * We drain on every iteration (not just when notify_socket_ready)
+         * because the kernel edge-trigger might coalesce multiple NOTIFYs
+         * into a single readability event.  If the connection is broken,
+         * attempt a reconnect and rebuild the WaitEventSet.
+         */
+        if (notify_conn != NULL)
+        {
+            bool conn_ok = notify_drain(&do_async, &do_scheduled);
+            if (!conn_ok)
+            {
+                elog(WARNING, "%s: notify connection lost, reconnecting",
+                     PGDJ_APPNAME);
+                notify_conn_close();
+                notify_conn_open();
+                notify_wait_set_build();
+            }
+        }
+        else if (notify_socket_ready)
+        {
+            /*
+             * Socket became readable but we have no connection – this
+             * should not happen, but rebuild defensively.
+             */
+            notify_conn_open();
+            notify_wait_set_build();
+        }
+
         now = GetCurrentTimestamp();
 
-        do_async = startup ||
-                   TimestampDifferenceExceeds(last_async_poll, now,
-                                              (int) (pgdj_queue_interval * 1000));
-        do_scheduled = startup ||
-                       TimestampDifferenceExceeds(last_scheduled_poll, now,
-                                                  (int) (pgdj_queue_interval * 1000));
+        /*
+         * Force a full poll when the interval has elapsed regardless of
+         * whether a NOTIFY was received.
+         */
+        if (startup ||
+            TimestampDifferenceExceeds(last_async_poll, now,
+                                       (int) (pgdj_queue_interval * 1000)))
+            do_async = true;
+
+        if (startup ||
+            TimestampDifferenceExceeds(last_scheduled_poll, now,
+                                       (int) (pgdj_queue_interval * 1000)))
+            do_scheduled = true;
 
         startup = false;
         jobs_reset();
@@ -585,23 +868,26 @@ pgdj_main(Datum main_arg)
             /* Wait if at the concurrency ceiling */
             while (running_workers >= pgdj_queue_processes)
             {
+		WaitEvent throttle_events[2];
+
                 elog(WARNING,
                      "%s: job_queue_processes limit (%d) reached, waiting",
                      PGDJ_APPNAME, pgdj_queue_processes);
 
-                rc = WaitLatch(MyLatch,
-                               WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-                               1000,
-                               PG_WAIT_EXTENSION);
-                ResetLatch(MyLatch);
+                WaitEventSetWait(wait_set, 1000,
+                                 throttle_events, 2,
+                                 PG_WAIT_EXTENSION);
 
-                if (rc & WL_POSTMASTER_DEATH)
-                    proc_exit(1);
+                for (int e = 0; e < 2; e++)
+                {
+                    if (throttle_events[e].events & WL_POSTMASTER_DEATH)
+                        proc_exit(1);
+                    if (throttle_events[e].events & WL_LATCH_SET)
+                        ResetLatch(MyLatch);
+                }
+
                 if (got_sigterm)
-		{
-		    elog(LOG, "%s: scheduler shutting down", PGDJ_APPNAME);
-		    proc_exit(0);
-	        }
+			goto shutdown;
 
                 if (running_workers > 0)
                     running_workers--;
@@ -611,11 +897,19 @@ pgdj_main(Datum main_arg)
                 elog(LOG, "%s: spawn_job_worker for job %lld scheduled %d",
 				PGDJ_APPNAME, pending_jobs[i].jobid,
 				pending_jobs[i].is_scheduled);
+
             spawn_job_worker(pending_jobs[i].jobid,
                              pending_jobs[i].is_scheduled);
         }
     }
 
+shutdown:
+    notify_conn_close();
+    if (wait_set)
+    {
+        FreeWaitEventSet(wait_set);
+        wait_set = NULL;
+    }
     elog(LOG, "%s: scheduler shutting down", PGDJ_APPNAME);
     proc_exit(0);
 }

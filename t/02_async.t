@@ -9,7 +9,7 @@ ok( $? == 0, "truncate history and job tables");
 # Create an asynchronous job
 $ret = `psql -X -d regress_dbms_job -f test/sql/async.sql > /dev/null 2>&1`;
 ok( $? == 0, "Submit job");
-sleep(5);
+sleep(4);
 
 # We should have the bgw and the child still running,
 # the current running jobs must not be stopped

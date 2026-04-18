@@ -7,6 +7,8 @@ OBJS = pg_dbms_job.o $(WIN32RES)
 
 PGFILEDESC = "pg_dbms_job - Propose Oracle DBMS_JOB compatibility for PostgreSQL"
 
+PG_LDFLAGS = -L$(libpq_builddir) -lpq
+
 PG_CONFIG = pg_config
 PG10 = $(shell $(PG_CONFIG) --version | egrep " 8\.| 9\." > /dev/null && echo no || echo yes)
 

@@ -339,3 +339,70 @@ $$;
 COMMENT ON FUNCTION dbms_job.get_next_date(text)
     IS 'Used to get the next date returned by the interval code';
 
+----------------------------------
+-- NOTIFY/LISTEN related triggers
+----------------------------------
+CREATE FUNCTION dbms_job.job_scheduled_notify()
+    RETURNS trigger
+    LANGUAGE PLPGSQL
+    AS $$
+BEGIN
+    -- Force interval to be NULL if this is set to an empty string
+    IF TG_OP = 'UPDATE' OR TG_OP = 'INSERT' THEN
+        IF NEW.interval = '' THEN
+            NEW.interval := NULL;
+        END IF;
+    END IF;
+    -- When a change occurs in the all_scheduled_jobs table, notify the scheduler.
+    IF TG_OP = 'UPDATE' THEN
+	-- We do not notify the scheduler if it is at the origine of the UPDATE.
+        -- We increment the value of the instance column when this is an internal
+	-- update after an execution.
+        IF NEW.instance = OLD.instance THEN
+	    PERFORM pg_notify('dbms_job_scheduled_notify', TG_OP || ':' || OLD.job || ':' || NEW.job);
+        END IF;
+	RETURN NEW;
+    END IF;
+    IF TG_OP = 'INSERT' THEN
+	PERFORM pg_notify('dbms_job_scheduled_notify', TG_OP || ':' || NEW.job);
+	RETURN NEW;
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+	PERFORM pg_notify('dbms_job_scheduled_notify', TG_OP || ':' || OLD.job);
+	RETURN OLD;
+    END IF;
+    -- TRUNCATE
+    PERFORM pg_notify('dbms_job_scheduled_notify', TG_OP);
+    RETURN OLD;
+END;
+$$;
+COMMENT ON FUNCTION dbms_job.job_scheduled_notify()
+    IS 'Notify the scheduler that the job cache must be invalidated';
+
+-- When there is a modification in the JOB table invalidate the cache
+-- to inform the background worker to reread the table
+CREATE TRIGGER dbms_job_scheduled_notify_trg
+    AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE
+    ON dbms_job.all_scheduled_jobs
+    FOR STATEMENT EXECUTE FUNCTION dbms_job.job_scheduled_notify();
+
+CREATE FUNCTION dbms_job.job_async_notify()
+    RETURNS trigger
+    LANGUAGE PLPGSQL
+    AS $$
+BEGIN
+    -- When a new async job is submitted, notify the scheduler
+    PERFORM pg_notify('dbms_job_async_notify', 'New asynchronous job received');
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION dbms_job.job_async_notify()
+    IS 'Notify the scheduler that a new asynchronous job was submitted';
+
+-- When there is a new asynchronous job submited
+-- to inform the daemon to reread the table
+CREATE TRIGGER dbms_job_async_notify_trg
+    AFTER INSERT
+    ON dbms_job.all_async_jobs
+    FOR STATEMENT EXECUTE FUNCTION dbms_job.job_async_notify();
+
