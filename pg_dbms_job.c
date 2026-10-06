@@ -914,7 +914,16 @@ shutdown:
         wait_set = NULL;
     }
     elog(LOG, "%s: scheduler shutting down", PGDJ_APPNAME);
-    proc_exit(0);
+
+    /*
+     * Exit with code 1 so that the postmaster restarts the scheduler after
+     * bgw_restart_time when it has been terminated while the server keeps
+     * running (pg_terminate_backend(), DROP DATABASE ... WITH (FORCE), ...).
+     * An exit code of 0 unregisters the worker and no job would be executed
+     * anymore until the next server restart. During a server shutdown the
+     * postmaster does not restart background workers whatever the exit code.
+     */
+    proc_exit(1);
 }
 
 /* =========================================================================
