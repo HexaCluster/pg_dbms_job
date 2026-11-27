@@ -1,9 +1,11 @@
+use FindBin;
+require "$FindBin::Bin/worker_count.pl";
 use Test::Simple tests => 5;
 
 # Submit an asynchronous job and validate that queue_job_interval is respected
 
 # Verify that the process is running
-$ret = `ps auwx | grep pg_dbms_job: | grep -v grep | wc -l`;
+$ret = worker_count();
 chomp($ret);
 ok( $ret eq "1", "Background worker pg_dbms_job is running");
 

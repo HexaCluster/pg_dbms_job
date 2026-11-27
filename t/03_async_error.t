@@ -1,9 +1,11 @@
+use FindBin;
+require "$FindBin::Bin/worker_count.pl";
 use Test::Simple tests => 4;
 
 # Submit an asynchronous job with a failure
 
 # Verify that the process is running
-$ret = `ps auwx | grep pg_dbms_job: | grep -v grep | wc -l`;
+$ret = worker_count();
 chomp($ret);
 ok( $ret eq "1", "Daemon pg_dbms_job is running");
 

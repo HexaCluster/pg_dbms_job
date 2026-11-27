@@ -1,9 +1,11 @@
+use FindBin;
+require "$FindBin::Bin/worker_count.pl";
 use Test::Simple tests => 11;
 
 # Test procedure dbms_job.run
 
 # Verify that the process is running
-$ret = `ps auwx | grep pg_dbms_job: | grep -v grep | wc -l`;
+$ret = worker_count();
 chomp($ret);
 ok( $ret eq "1", "Background worker pg_dbms_job is running");
 
