@@ -1,3 +1,5 @@
+use FindBin;
+require "$FindBin::Bin/worker_count.pl";
 use Test::Simple tests => 6;
 
 # Test asynchronous jobs
@@ -13,7 +15,7 @@ sleep(4);
 
 # We should have the bgw and the child still running,
 # the current running jobs must not be stopped
-$ret = `ps auwx | grep pg_dbms_job | grep -v grep | wc -l`;
+$ret = worker_count();
 chomp($ret);
 ok( $ret eq "2", "Background worker pg_dbms_job and subprocess are running: $ret");
 
@@ -33,6 +35,6 @@ ok( $? == 0 && $ret eq "1", "Found $ret async job in the history");
 sleep(1);
 
 # Now all process must be terminated
-$ret = `ps auwx | grep pg_dbms_job | grep -v grep | wc -l`;
+$ret = worker_count();
 chomp($ret);
 ok( $ret eq "1", "Asynchronous job is stopped");

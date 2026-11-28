@@ -1,3 +1,5 @@
+use FindBin;
+require "$FindBin::Bin/worker_count.pl";
 use Test::Simple tests => 12;
 
 # Test that the ademon can be started and stopped
@@ -43,7 +45,7 @@ ok( $? == 0, "Add privileges to test user on pg_dbms_job procedures");
 sleep(5);
 
 # Verify that the process is running
-$ret = `ps auwx | grep pg_dbms_job | grep -v grep | wc -l`;
+$ret = worker_count();
 chomp($ret);
 ok( $ret eq "1", "pg_dbms_job background worker is running");
 
